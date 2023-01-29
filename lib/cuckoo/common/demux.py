@@ -5,14 +5,14 @@
 import logging
 import os
 import tempfile
-from pathlib import Path
 from typing import List
 
 from lib.cuckoo.common.config import Config
 from lib.cuckoo.common.exceptions import CuckooDemuxError
 from lib.cuckoo.common.integrations.parse_pe import HAVE_PEFILE, IsPEImage
 from lib.cuckoo.common.objects import File
-from lib.cuckoo.common.utils import get_options, path_to_ascii, sanitize_filename, trim_sample
+from lib.cuckoo.common.path_utils import path_exists, path_mkdir, path_write_file
+from lib.cuckoo.common.utils import get_options, sanitize_filename, trim_sample
 
 sf_version = ""
 try:
@@ -27,7 +27,7 @@ except ImportError:
     print("You must install sflock\nsudo apt-get install p7zip-full lzip rar unace-nonfree cabextract\npip3 install -U SFlock2")
     HAS_SFLOCK = False
 
-if sf_version and int(sf_version.split(".")[-1]) < 41:
+if sf_version and int(sf_version.split(".")[-1]) < 42:
     print("You using old version of sflock! Upgrade: pip3 install -U SFlock2")
 
 log = logging.getLogger(__name__)
@@ -130,8 +130,8 @@ def options2passwd(options: str) -> str:
 def demux_office(filename: bytes, password: str) -> List[bytes]:
     retlist = []
     target_path = os.path.join(tmp_path, "cuckoo-tmp/msoffice-crypt-tmp")
-    if not Path(target_path).exists():
-        os.makedirs(target_path)
+    if not path_exists(target_path):
+        path_mkdir(target_path)
     decrypted_name = os.path.join(target_path, os.path.basename(filename).decode())
 
     if HAS_SFLOCK:
@@ -139,7 +139,7 @@ def demux_office(filename: bytes, password: str) -> List[bytes]:
         d = ofile.decrypt(password)
         # TODO: add decryption verification checks
         if hasattr(d, "contents") and "Encrypted" not in d.magic:
-            _ = Path(decrypted_name).write_bytes(d.contents)
+            _ = path_write_file(decrypted_name, d.contents)
             retlist.append(decrypted_name.encode())
     else:
         raise CuckooDemuxError("MS Office decryptor not available")
@@ -162,13 +162,13 @@ def _sf_chlildren(child: sfFile) -> bytes:
     ext = ext.lower()
     if ext in demux_extensions_list or is_valid_type(child.magic):
         target_path = os.path.join(tmp_path, "cuckoo-sflock")
-        if not Path(target_path).exists():
-            os.mkdir(target_path)
+        if not path_exists(target_path):
+            path_mkdir(target_path)
         tmp_dir = tempfile.mkdtemp(dir=target_path)
         try:
             if child.contents:
                 path_to_extract = os.path.join(tmp_dir, sanitize_filename((child.filename).decode()))
-                _ = Path(path_to_extract).write_bytes(child.contents)
+                _ = path_write_file(path_to_extract, child.contents)
         except Exception as e:
             log.error(e, exc_info=True)
     return path_to_extract.encode()
@@ -183,9 +183,9 @@ def demux_sflock(filename: bytes, options: str) -> List[bytes]:
     try:
         password = options2passwd(options) or "infected"
         try:
-            unpacked = unpack(filename, password=password)
+            unpacked = unpack(filename, password=password, check_shellcode=True)
         except UnpackException:
-            unpacked = unpack(filename)
+            unpacked = unpack(filename, check_shellcode=True)
 
         if unpacked.package in whitelist_extensions:
             return [filename]
@@ -264,7 +264,7 @@ def demux_sample(filename: bytes, package: str, options: str, use_sflock: bool =
                     if trimmed_size:
                         data = File(filename).get_chunks(trimmed_size).__next__()
                         if trimmed_size < web_cfg.general.max_sample_size:
-                            _ = Path(path_to_ascii(filename)).write_bytes(data)
+                            _ = path_write_file(filename, data)
                             retlist.append(filename)
 
     return retlist[:10]

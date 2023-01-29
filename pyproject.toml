@@ -12,7 +12,7 @@ greenlet = "2.0.1"
 Pebble = "4.6.3"
 # pymisp = "2.4.144"
 cryptography = "39.0.0"
-requests = {version = "2.27.1", extras = ["security", "socks"]}
+requests = {version = "2.28.0", extras = ["security", "socks"]}
 pyOpenSSL = "23.0.0"
 pefile = "*"
 tldextract = "3.1.0"
@@ -28,8 +28,8 @@ orjson = "3.8.5"
 # pyinstaller = "4.4"
 # maec = "4.1.0.17"
 regex = "2021.7.6"
-SFlock2 = "0.3.41"
-pyattck = "5.2.0"
+SFlock2 = "0.3.42"
+pyattck = "7.0.0"
 # distorm3 = "3.5.2"
 # openpyxl = "3.0.7"
 # volatility3 = "2.0.0"
@@ -71,7 +71,7 @@ psutil = "5.8.0"
 LnkParse3 = "1.2.0"
 django-allauth = "0.50.0"  # https://django-allauth.readthedocs.io/en/latest/configuration.html
 # enum34 = "1.1.10"
-socks5man = {git = "https://github.com/doomedraven/socks5man.git", rev = "7b335d027297b67abdf28f38cc7d5d42c9d810b5"}
+# socks5man = {git = "https://github.com/doomedraven/socks5man.git", rev = "7b335d027297b67abdf28f38cc7d5d42c9d810b5"}
 # batch-deobfuscator = {git = "https://github.com/DissectMalware/batch_deobfuscator.git", rev = "a0d9d51e28cf519a42b35587fde7f8df09c78be3"}
 # httpreplay = {git = "https://github.com/CAPESandbox/httpreplay.git", rev = "0d5a5b3144ab15f93189b83ca8188afde43db134"}
 # bingraph = {git = "https://github.com/CAPESandbox/binGraph.git", rev = "552d1210ac6770f8b202d0d1fc4610cc14d878ec"}
@@ -83,6 +83,7 @@ pyguacamole = "^0.11"
 uvicorn = {extras = ["standard"], version = "^0.18.2"}
 gunicorn = "^20.1.0"
 channels = "^3.0.5"
+setproctitle = "1.3.2"
 
 [tool.poetry.dev-dependencies]
 black = "^22.3.0"
@@ -126,4 +127,3 @@ norecursedirs = "tests/zip_compound"
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
-

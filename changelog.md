@@ -1,3 +1,9 @@
+### [26.1.2023] Configs
+* Please read [this](https://github.com/kevoreilly/CAPEv2/blob/master/conf/readme.md) to simplify your life with configs managment
+
+### [25.1.2023]
+* Google Cloud Platform (GCP) support in distributed CAPE aka dist.py
+
 ### [5.1.2023]
 * Big duplicated code cleanup. Context: CAPE.py module processing all the files so it calling File(x).get_all() which is pretty heavy.
 * Deprecated standalone modules. They are moved inside of CAPE.py. Data will be under the same keys.

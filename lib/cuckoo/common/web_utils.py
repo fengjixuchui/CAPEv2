@@ -18,13 +18,13 @@ from django.http import HttpResponse
 from lib.cuckoo.common.config import Config
 from lib.cuckoo.common.integrations.parse_pe import HAVE_PEFILE, IsPEImage, pefile
 from lib.cuckoo.common.objects import File
+from lib.cuckoo.common.path_utils import path_exists, path_mkdir, path_write_file
 from lib.cuckoo.common.utils import (
     bytes2str,
     generate_fake_name,
     get_ip_address,
     get_options,
     get_user_filename,
-    path_to_ascii,
     sanitize_filename,
     store_temp_file,
     trim_sample,
@@ -51,6 +51,7 @@ sys.path.append(CUCKOO_ROOT)
 cfg = Config("cuckoo")
 web_cfg = Config("web")
 repconf = Config("reporting")
+dist_conf = Config("distributed")
 routing_conf = Config("routing")
 machinery = Config(cfg.cuckoo.machinery)
 disable_x64 = cfg.cuckoo.get("disable_x64", False)
@@ -73,7 +74,7 @@ DYNAMIC_PLATFORM_DETERMINATION = web_cfg.general.dynamic_platform_determination
 
 HAVE_DIST = False
 # Distributed CAPE
-if repconf.distributed.enabled:
+if dist_conf.distributed.enabled:
     try:
         # Tags
         from lib.cuckoo.common.dist_db import Machine, Node
@@ -81,7 +82,7 @@ if repconf.distributed.enabled:
         from lib.cuckoo.common.dist_db import create_session
 
         HAVE_DIST = True
-        dist_session = create_session(repconf.distributed.db)
+        dist_session = create_session(dist_conf.distributed.db)
     except Exception as e:
         print(e)
 
@@ -179,7 +180,7 @@ def my_rate_minutes(group, request):
 
 def load_vms_exits():
     all_exits = {}
-    if HAVE_DIST and repconf.distributed.enabled:
+    if HAVE_DIST and dist_conf.distributed.enabled:
         try:
             db = dist_session()
             for node in db.query(Node).all():
@@ -195,7 +196,7 @@ def load_vms_exits():
 
 def load_vms_tags():
     all_tags = []
-    if HAVE_DIST and repconf.distributed.enabled:
+    if HAVE_DIST and dist_conf.distributed.enabled:
         try:
             db = dist_session()
             for vm in db.query(Machine).all():
@@ -394,7 +395,7 @@ def statistics(s_days: int) -> dict:
         sorted(details["tasks"].items(), key=lambda x: datetime.strptime(x[0], "%Y-%m-%d"), reverse=True)
     )
 
-    if HAVE_DIST and repconf.distributed.enabled:
+    if HAVE_DIST and dist_conf.distributed.enabled:
         details["distributed_tasks"] = {}
         dist_db = dist_session()
         dist_tasks = dist_db.query(DTask).filter(DTask.clock.between(date_since, date_till)).all()
@@ -492,8 +493,7 @@ def recon(filename, orig_options, timeout, enforce_timeout):
 
 def get_magic_type(data):
     try:
-        path = path_to_ascii(data)
-        if Path(path).exists():
+        if path_exists(data):
             return magic.from_file(data)
         else:
             return magic.from_buffer(data)
@@ -625,9 +625,8 @@ def download_file(**kwargs):
                 return "error", {"error": f"Hashes mismatch, original hash: {kwargs['fhash']} - retrieved hash: {retrieved_hash}"}
 
         path = kwargs.get("path") if isinstance(kwargs.get("path", ""), str) else kwargs.get("path").decode()
-        p = Path(path)
-        if not p.exists():
-            _ = p.write_bytes(kwargs["content"])
+        if not path_exists(path):
+            _ = path_write_file(path, kwargs["content"])
     except Exception as e:
         print(e, sys.exc_info())
         return "error", {"error": f"Error writing {kwargs['service']} storing/download file to temporary path"}
@@ -750,7 +749,7 @@ def save_script_to_storage(task_ids, kwargs):
             if file_ext not in (".py", ".ps1", ".exe"):
                 raise ValueError(f"Unknown file_extention of {file_ext} to run for pre_script")
 
-            os.makedirs(script_temp_path, exist_ok=True)
+            path_mkdir(script_temp_path, exist_ok=True)
             log.info("Writing pre_script to temp folder %s", script_temp_path)
             _ = Path(os.path.join(script_temp_path, f"pre_script{file_ext}")).write_bytes(kwargs["pre_script_content"])
         if "during_script_name" in kwargs and "during_script_content" in kwargs:
@@ -758,7 +757,7 @@ def save_script_to_storage(task_ids, kwargs):
             if file_ext not in (".py", ".ps1", ".exe"):
                 raise ValueError(f"Unknown file_extention of {file_ext} to run for during_script")
 
-            os.makedirs(script_temp_path, exist_ok=True)
+            path_mkdir(script_temp_path, exist_ok=True)
             log.info("Writing during_script to temp folder %s", script_temp_path)
             _ = Path(os.path.join(script_temp_path, f"during_script{file_ext}")).write_bytes(kwargs["during_script_content"])
 
@@ -859,7 +858,7 @@ def validate_task_by_path(tid):
     # if not os.path.normpath(srcdir).startswith(ANALYSIS_BASE_PATH):
     #    return render(request, "error.html", {"error": f"File not found {os.path.basename(srcdir)}"})
 
-    return Path(analysis_path).exists()
+    return path_exists(analysis_path)
 
 
 perform_search_filters = {
@@ -1206,8 +1205,8 @@ def get_hash_list(hashes):
 def download_from_vt(vtdl, details, opt_filename, settings):
     for h in get_hash_list(vtdl):
         folder = os.path.join(settings.VTDL_PATH, "cape-vt")
-        if not Path(folder).exists():
-            os.makedirs(folder)
+        if not path_exists(folder):
+            path_mkdir(folder)
         base_dir = tempfile.mkdtemp(prefix="vtdl", dir=folder)
         if opt_filename:
             filename = f"{base_dir}/{opt_filename}"
@@ -1350,7 +1349,7 @@ def submit_task(
     """
     ToDo add url support in future
     """
-    if not Path(target).exists():
+    if not path_exists(target):
         log.info("File doesn't exist")
         return
 

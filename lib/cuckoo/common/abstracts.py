@@ -30,6 +30,7 @@ from lib.cuckoo.common.exceptions import (
     CuckooReportError,
 )
 from lib.cuckoo.common.objects import Dictionary
+from lib.cuckoo.common.path_utils import path_exists
 from lib.cuckoo.common.url_validate import url as url_validator
 from lib.cuckoo.common.utils import create_folder, get_memdump_path, load_categories
 from lib.cuckoo.core.database import Database
@@ -63,9 +64,10 @@ if repconf.mitre.enabled:
         from pyattck import Attck
         from pyattck.utils.version import __version_info__ as pyattck_version
 
-        if pyattck_version >= (4, 1, 1) and pyattck_version <= (5, 2, 0):
+        # Version is hardcoded due to possible changes in load of the library
+        if pyattck_version >= (4, 1, 1) and pyattck_version <= (7, 0, 0):
             mitre = Attck(
-                nested_subtechniques=True,
+                nested_techniques=True,
                 use_config=True,
                 save_config=True,
                 config_file_path=os.path.join(CUCKOO_ROOT, "data", "mitre", "config.yml"),
@@ -75,7 +77,6 @@ if repconf.mitre.enabled:
                 mobile_attck_json=os.path.join(CUCKOO_ROOT, "data", "mitre", "mobile_attck_json.json"),
                 ics_attck_json=os.path.join(CUCKOO_ROOT, "data", "mitre", "ics_attck_json.json"),
                 nist_controls_json=os.path.join(CUCKOO_ROOT, "data", "mitre", "nist_controls_json.json"),
-                generated_attck_json=os.path.join(CUCKOO_ROOT, "data", "mitre", "generated_attck_json.json"),
                 generated_nist_json=os.path.join(CUCKOO_ROOT, "data", "mitre", "generated_nist_json.json"),
             )
             HAVE_MITRE = True
@@ -910,7 +911,7 @@ class Signature:
                 pids.append(int(pid.get("pid", "")))
                 pids += [int(cpid["pid"]) for cpid in pid.get("children", []) if "pid" in cpid]
         # in case if bsons too big
-        if Path(logs).exists():
+        if path_exists(logs):
             pids += [int(pidb.replace(".bson", "")) for pidb in os.listdir(logs) if ".bson" in pidb]
 
         #  in case if injection not follows
