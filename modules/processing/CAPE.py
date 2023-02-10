@@ -43,11 +43,17 @@ except ImportError:
     HAVE_PYDEEP = False
 
 processing_conf = Config("processing")
+externalservices_conf = Config("externalservices")
 
 HAVE_FLARE_CAPA = False
 # required to not load not enabled dependencies
 if processing_conf.flare_capa.enabled and not processing_conf.flare_capa.on_demand:
     from lib.cuckoo.common.integrations.capa import HAVE_FLARE_CAPA, flare_capa_details
+
+MISP_HASH_LOOKUP = False
+if externalservices_conf.misp.enabled:
+    with suppress(Exception):
+        from lib.cuckoo.common.integrations.misp import MISP_HASH_LOOKUP, misp_hash_lookup
 
 ssdeep_threshold = 95
 
@@ -77,6 +83,8 @@ unpack_map = {
 
 class CAPE(Processing):
     """CAPE output file processing."""
+
+    key = "CAPE"
 
     def add_family_detections(self, file_info, cape_names):
         for cape_name in cape_names:
@@ -205,6 +213,10 @@ class CAPE(Processing):
 
         if processing_conf.CAPE.targetinfo and category in ("static", "file"):
             file_info["name"] = Path(self.task["target"]).name
+
+            if MISP_HASH_LOOKUP:
+                misp_hash_lookup(file_info["sha256"], str(self.task["id"]), file_info)
+
             self.results["target"] = {
                 "category": category,
                 "file": file_info,
@@ -283,7 +295,7 @@ class CAPE(Processing):
 
             if cape_name and cape_name not in executed_config_parsers[tmp_path]:
                 tmp_config = static_config_parsers(cape_name, tmp_path, tmp_data)
-                self.update_cape_configs(tmp_config)
+                self.update_cape_configs(cape_name, tmp_config, file_info)
                 executed_config_parsers[tmp_path].add(cape_name)
 
         if type_string:
@@ -296,8 +308,9 @@ class CAPE(Processing):
                 if tmp_config:
                     cape_names.add(cape_name)
                     log.info("CAPE: config returned for: %s", cape_name)
-                    self.update_cape_configs(tmp_config)
+                    self.update_cape_configs(cape_name, tmp_config, file_info)
 
+        self.link_configs_to_analysis()
         self.add_family_detections(file_info, cape_names)
 
         # Remove duplicate payloads from web ui
@@ -328,16 +341,14 @@ class CAPE(Processing):
                 self.add_statistic_tmp("flare_capa", "time", pretime=pretime)
             self.cape["payloads"].append(file_info)
 
+    def _set_dict_keys(self):
+        self.cape = {"payloads": [], "configs": []}
+
     def run(self):
         """Run analysis.
         @return: list of CAPE output files with related information.
         """
-        self.key = "CAPE"
-
-        self.cape = {}
-        self.cape["payloads"] = []
-        self.cape["configs"] = []
-
+        self._set_dict_keys()
         meta = {}
         # Required to control files extracted by selfextract.conf as we store them in dropped
         duplicated: DuplicatesType = collections.defaultdict(set)
@@ -357,7 +368,7 @@ class CAPE(Processing):
                     "metadata": entry.get("metadata", {}),
                 }
 
-        # Finally static processing of submitted file
+        #  Static processing of submitted file
         if self.task["category"] in ("file", "static"):
             self.process_file(
                 self.file_path, False, meta.get(self.file_path, {}), category=self.task["category"], duplicated=duplicated
@@ -380,23 +391,37 @@ class CAPE(Processing):
                             self.process_file(filepath, False, meta.get(filepath, {}), category=category, duplicated=duplicated)
         return self.cape
 
-    def update_cape_configs(self, config):
+    def update_cape_configs(self, cape_name, config, file_obj):
         """Add the given config to self.cape["configs"]."""
         if not config:
             return
 
-        updated = False
+        # look for an existing config matching this cape_name; merge them if found
+        for existing_config in self.cape["configs"]:
+            if cape_name in existing_config:
+                log.warning("CAPE: data loss may occur, existing config found for: %s", cape_name)
+                existing_config[cape_name].update(config[cape_name])
+                return
 
-        for name, data in config.items():
-            break
+        # first time a config for this cape_name was seen
+        log.info("CAPE: new config found for: %s", cape_name)
+        # link the config to the hashes it was generated from
+        config["associated_config_hashes"] = {
+            hashtype: file_obj.get(hashtype, "") for hashtype in ("md5", "sha1", "sha256", "sha512", "sha3_384")
+        }
+        self.cape["configs"].append(config)
 
-        # Some families may have multiple configs. Squash them all together.
-        if name not in self.cape["configs"]:
-            for current in self.cape["configs"]:
-                if name == list(current.keys())[0]:
-                    current[name].update(data)
-                    updated = True
-                    break
+    def link_configs_to_analysis(self):
+        """Embed associated_analysis_hashes in each config.
 
-        if updated is False:
-            self.cape["configs"].append(config)
+        This links the configs to the analysis hashes that generated it.
+        """
+        if self.results.get("target", {}).get("category", "") not in ("static", "file"):
+            return
+
+        target_file = self.results["target"]["file"]
+        associated_analysis_hashes = {
+            hashtype: target_file.get(hashtype, "") for hashtype in ("md5", "sha1", "sha256", "sha512", "sha3_384")
+        }
+        for config in self.cape["configs"]:
+            config["associated_analysis_hashes"] = associated_analysis_hashes

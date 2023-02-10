@@ -815,10 +815,8 @@ class Database(object, metaclass=Singleton):
         # Are there available machines that match up with a task?
         task_archs = [tag.name for tag in task.tags if tag.name in ("x86", "x64")]
         task_tags = [tag.name for tag in task.tags if tag.name not in task_archs]
-        relevant_available_machines = self.list_machines(
-            locked=False, label=task.machine, platform=task.platform, tags=task_tags, arch=task_archs
-        )
-        if len(relevant_available_machines) > 0:
+        vms = self.list_machines(locked=False, label=task.machine, platform=task.platform, tags=task_tags, arch=task_archs)
+        if len(vms) > 0:
             # There are? Awesome!
             self.set_status(task_id=task.id, status=TASK_RUNNING)
             return True
@@ -836,8 +834,8 @@ class Database(object, metaclass=Singleton):
         """
         task_archs = [tag.name for tag in task.tags if tag.name in ("x86", "x64")]
         task_tags = [tag.name for tag in task.tags if tag.name not in task_archs]
-        relevant_machines = self.list_machines(label=task.machine, platform=task.platform, tags=task_tags, arch=task_archs)
-        if len(relevant_machines) > 0:
+        vms = self.list_machines(label=task.machine, platform=task.platform, tags=task_tags, arch=task_archs)
+        if len(vms) > 0:
             return True
         return False
 
@@ -985,15 +983,23 @@ class Database(object, metaclass=Singleton):
         return machines
 
     @classlock
-    def list_machines(self, locked=None, label=None, platform=None, tags=[], arch=None):
+    def list_machines(self, locked=None, label=None, name=None, platform=None, tags=[], arch=None):
         """Lists virtual machines.
         @return: list of virtual machines
+        """
+        """
+        id |  name  | label | arch |
+        ----+-------+-------+------+
+        77 | cape1  | win7  | x86  |
+        78 | cape2  | win10 | x64  |
         """
         session = self.Session()
         try:
             machines = session.query(Machine).options(joinedload("tags"))
             if locked is not None and isinstance(locked, bool):
                 machines = machines.filter_by(locked=locked)
+            if name:
+                machines = machines.filter_by(name=name)
             if label:
                 machines = machines.filter_by(label=label)
             if platform:

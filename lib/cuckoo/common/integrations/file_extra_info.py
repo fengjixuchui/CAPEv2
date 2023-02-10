@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import tempfile
 import timeit
-from pathlib import Path
 from typing import DefaultDict, List, Optional, Set, TypedDict
 
 import pebble
@@ -27,7 +26,15 @@ from lib.cuckoo.common.integrations.parse_pdf import PDF
 from lib.cuckoo.common.integrations.parse_pe import HAVE_PEFILE, PortableExecutable
 from lib.cuckoo.common.integrations.parse_wsf import WindowsScriptFile  # EncodedScriptFile
 from lib.cuckoo.common.objects import File
-from lib.cuckoo.common.path_utils import path_exists, path_get_size, path_mkdir, path_read_file, path_write_file
+from lib.cuckoo.common.path_utils import (
+    path_exists,
+    path_get_size,
+    path_is_file,
+    path_mkdir,
+    path_object,
+    path_read_file,
+    path_write_file,
+)
 
 # from lib.cuckoo.common.integrations.parse_elf import ELF
 from lib.cuckoo.common.utils import get_options, is_text_file
@@ -42,7 +49,7 @@ except ImportError:
 # https://github.com/volexity/threat-intel/tree/main/tools/one-extract
 try:
     HAVE_ONE = True
-    from lib.cuckoo.common.integrations.office_one import OneNoteExtractor
+    from lib.cuckoo.common.integrations.office_one import OneNoteExtractor, OneNoteExtractorException
 except ImportError:
     HAVE_ONE = False
 
@@ -216,7 +223,7 @@ def static_file_info(
     # elif HAVE_OLETOOLS and package == "hwp" and selfextract_conf.general.hwp:
     #    data_dictionary["hwp"] = HwpDocument(file_path).run()
 
-    data = Path(file_path).read_bytes()
+    data = path_read_file(file_path)
 
     if not file_path.startswith(exclude_startswith) and not file_path.endswith(excluded_extensions):
         data_dictionary["data"] = is_text_file(data_dictionary, file_path, 8192, data)
@@ -308,11 +315,11 @@ def _extracted_files_metadata(
     with open(filelog, "a") as f:
         for file in files:
             full_path = os.path.join(folder, file)
-            if not Path(full_path).is_file():
+            if not path_is_file(full_path):
                 # ToDo walk subfolders
                 continue
 
-            size_mb = int(os.path.getsize(full_path) / (1024 * 1024))
+            size_mb = int(path_get_size(full_path) / (1024 * 1024))
             if size_mb > int(processing_conf.CAPE.max_file_size):
                 log.info("_extracted_files_metadata: file exceeded max_file_size: %s: %d MB", full_path, size_mb)
                 continue
@@ -363,7 +370,7 @@ def collect_extracted_filenames(tempdir):
     extracted_files = []
     for root, _, files in os.walk(tempdir):
         for file in files:
-            path = Path(root, file)
+            path = path_object(os.path.join(root, file))
             if path.is_file():
                 extracted_files.append(str(path.relative_to(tempdir)))
     return extracted_files
@@ -451,7 +458,7 @@ def generic_file_extractors(
             continue
         if not func_result:
             continue
-        extraction_result = func_result["result"]
+        extraction_result = func_result.get("result")
         if extraction_result is None:
             continue
         tempdir = extraction_result.get("tempdir")
@@ -502,7 +509,7 @@ def batch_extract(file: str, **_) -> ExtractorReturnType:
         return
 
     # compare hashes to ensure that they are not the same
-    data = Path(file).read_bytes()
+    data = path_read_file(file)
     original_sha256 = hashlib.sha256(data).hexdigest()
     decoded_sha256 = hashlib.sha256(decoded).hexdigest()
 
@@ -520,7 +527,7 @@ def vbe_extract(file: str, **_) -> ExtractorReturnType:
         return
 
     decoded = False
-    data = Path(file).read_bytes()
+    data = path_read_file(file)
     if b"#@~^" not in data[:100]:
         return
 
@@ -545,6 +552,7 @@ def eziriz_deobfuscate(file: str, *, data_dictionary: dict, **_) -> ExtractorRet
         return
 
     binary = shlex.split(selfextract_conf.eziriz_deobfuscate.binary.strip())[0]
+    binary = os.path.join(CUCKOO_ROOT, binary)
     if not binary:
         log.warning("eziriz_deobfuscate.binary is not defined in the configuration.")
         return
@@ -635,9 +643,7 @@ def msi_extract(file: str, *, filetype: str, **_) -> ExtractorReturnType:
         )
         if output:
             extracted_files = [
-                extracted_file
-                for extracted_file in list(filter(None, output.split("\n")))
-                if Path(tempdir, extracted_file).is_file()
+                extracted_file for extracted_file in list(filter(None, output.split("\n"))) if path_is_file(tempdir, extracted_file)
             ]
         else:
             output = subprocess.check_output(
@@ -694,7 +700,7 @@ def kixtart_extract(file: str, **_) -> ExtractorReturnType:
     if not HAVE_KIXTART:
         return
 
-    data = Path(file).read_bytes()
+    data = path_read_file(file)
 
     if not data.startswith(b"\x1a\xaf\x06\x00\x00\x10"):
         return
@@ -809,7 +815,7 @@ def SevenZip_unpack(file: str, *, filetype: str, data_dictionary: dict, options:
         if HAVE_SFLOCK:
             unpacked = unpack(file.encode(), password=password)
             for child in unpacked.children:
-                _ = Path(tempdir, child.filename.decode()).write_bytes(child.contents)
+                _ = path_write_file(os.path.join(tempdir, child.filename.decode()), child.contents)
         else:
             _ = subprocess.check_output(
                 [
@@ -859,15 +865,21 @@ def RarSFX_extract(file, *, data_dictionary, options: dict, **_) -> ExtractorRet
 @time_tracker
 def office_one(file, *, data_dictionary, options: dict, **_) -> ExtractorReturnType:
 
-    if not HAVE_ONE or open(file, "rb").read(16) != b"\xE4\x52\x5C\x7B\x8C\xD8\xA7\x4D\xAE\xB1\x53\x78\xD0\x29\x96\xD3":
+    if not HAVE_ONE or open(file, "rb").read(16) not in (
+        b"\xE4\x52\x5C\x7B\x8C\xD8\xA7\x4D\xAE\xB1\x53\x78\xD0\x29\x96\xD3",
+        b"\xA1\x2F\xFF\x43\xD9\xEF\x76\x4C\x9E\xE2\x10\xEA\x57\x22\x76\x5F",
+    ):
         return
 
     with extractor_ctx(file, "OfficeOne", prefix="office_one") as ctx:
         tempdir = ctx["tempdir"]
-        document = OneNoteExtractor(path_read_file(file))
-        for index, file_data in enumerate(document.extract_files()):
-            target_path = os.path.join(tempdir, f"_{index}.extracted")
-            _ = path_write_file(target_path, file_data)
+        try:
+            document = OneNoteExtractor(path_read_file(file))
+            for index, file_data in enumerate(document.extract_files()):
+                target_path = os.path.join(tempdir, f"_{index}.extracted")
+                _ = path_write_file(target_path, file_data)
+        except OneNoteExtractorException:
+            log.error("Can't process One file: %s", file)
         ctx["extracted_files"] = collect_extracted_filenames(tempdir)
 
     return ctx
