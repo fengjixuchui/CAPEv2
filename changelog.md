@@ -1,3 +1,40 @@
+### [9.3.2023]
+* Monitor updates:
+    * Remove cryptsp 'double' hooks in Office processes due to detonation failures (e.g. Word 2016)
+    * Prevent following child processes of WerSvc (to prevent werfault.exe producing mini dumps that are detected by yara due to in-memory monitor sigs)
+
+### [8.3.2023]
+* Virtual machine tags: For Windows only. Please set windows version in tag, any of: winxp, win7, win8, win10, win11.
+    * This is required for proper detonation for packages like MsiX.
+* New feature. In `web.conf` there is section `[packages]`:
+    * It allows to create new packages and push them to correct VMs.
+    * Or in case you want to detonate some of the packages only on specific VMs you can specify it there like: `package:vm_tag1,vm_tagX`
+* MsiX file proper recognization requires upgrade to `sflock2==0.3.48`, otherwise it will push it as zip or extract and add each file as separated job.
+
+### [1.03.2023]
+* Msix/MsixBundle package works only on Windows >= 10
+* Quarantine is integrated into normal file submission so you don't need to know if file is normal or quarantined.
+
+### [24.2.2023] CAPE 2.4: 🌻 Edition
+* New Unpacker option: `unpacker=2`
+* Deprecated:
+    * submitCAPE.py - no more additional jobs
+* Staging branch:
+    * We want to have CAPE stable. So new features will go to staging branch for 1-2 weeks before merged to master.
+    * If you want to help us to spot any possible issue use that branch on your dev side.
+* We need help to add as much tests as possible to cover all possible cases to prevent broken code.
+* Stop using `conf/` folder. All config should be in `custom/conf/`. This will simplify your life on CAPE updates when new entry added to base templates. [Details](https://github.com/kevoreilly/CAPEv2/blob/master/conf/readme.md)
+
+### [20.2.2023]
+* Scheduler update:
+    * A machine may be configured with `reserved = yes` in `<machinery>.conf`. For such machines, the scheduler will
+      not use it for tasks unless the user specifically requests it by its label.
+* Database update:
+    * The 'name' of all machines defined in `<machinery>.conf` must be unique. The same goes for their 'label' fields.
+
+### [16.2.2023]
+* Monitor update: Hooking engine stability fix for detonation issues (e.g. Word)
+
 ### [4.2.2023]
 * Monitor updates:
     * Extend svchost hookset to Winmgmt (netsvcs) service

@@ -3,6 +3,7 @@
 # See the file 'docs/LICENSE' for copying permission.
 
 import base64
+import collections
 import datetime
 import json
 import os
@@ -18,11 +19,11 @@ from wsgiref.util import FileWrapper
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import BadRequest, PermissionDenied
 from django.http import HttpResponse, HttpResponseRedirect, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_safe
+from django.views.decorators.http import require_POST, require_safe
 from rest_framework.decorators import api_view
 
 sys.path.append(settings.CUCKOO_PATH)
@@ -34,6 +35,7 @@ from lib.cuckoo.common.path_utils import path_exists, path_mkdir, path_safe
 from lib.cuckoo.common.utils import delete_folder
 from lib.cuckoo.common.web_utils import category_all_files, my_rate_minutes, my_rate_seconds, perform_search, rateblock, statistics
 from lib.cuckoo.core.database import TASK_PENDING, Database, Task
+from modules.reporting.report_doc import CHUNK_CALL_SIZE
 
 try:
     from django_ratelimit.decorators import ratelimit
@@ -158,6 +160,7 @@ anon_not_viewable_func_list = (
     "search_behavior",
     "statistics_data",
 )
+
 
 # Conditional decorator for web authentication
 class conditional_login_required:
@@ -604,7 +607,6 @@ def load_files(request, task_id, category):
                 sha256_blocks = data.get(category, [])
 
         if (enabledconf["vba2graph"] or enabledconf["bingraph"]) and sha256_blocks:
-
             for block in sha256_blocks or []:
                 if not block.get("sha256"):
                     continue
@@ -649,6 +651,96 @@ def load_files(request, task_id, category):
         raise PermissionDenied
 
 
+def fetch_signature_call_data(task_id, requested_calls):
+    try:
+        requested_calls_by_pid = collections.defaultdict(lambda: collections.defaultdict(set))
+        for requested_call in requested_calls:
+            if requested_call.get("type") != "call":
+                raise BadRequest("Only items whose 'type' is 'call' are accepted.")
+            pid = requested_call["pid"]
+            cid = requested_call["cid"]
+            # Store the "page number" (i.e. chunk) and the index within that chunk of the
+            # requested calls.
+            # Group the calls within the same chunk together so we only have to
+            # query once for each chunk.
+            chunk_idx, call_idx = divmod(cid, CHUNK_CALL_SIZE)
+            requested_calls_by_pid[pid][chunk_idx].add(call_idx)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise BadRequest
+
+    if enabledconf["mongodb"]:
+        # First, get the list of ObjectID's for call chunks for each process.
+        process_data = mongo_find_one(
+            "analysis",
+            {"info.id": task_id},
+            {"behavior.processes.process_id": 1, "behavior.processes.calls": 1, "_id": 0},
+        )
+    elif es_as_db:
+        process_data = es.search(
+            index=get_analysis_index(),
+            body={"query": {"bool": {"must": [{"match": {"info.id": task_id}}]}}},
+            _source=["behavior.processes.process_id", "behavior.processes.calls"],
+        )["hits"]["hits"][0]["_source"]
+    else:
+        return HttpResponse()
+
+    # Organize it for quick lookup by PID.
+    process_data_by_pid = {proc["process_id"]: proc["calls"] for proc in process_data["behavior"]["processes"]}
+
+    calls_to_return = []
+    try:
+        # For each of the requested calls, look it up based on the ObjectID
+        # referenced from the appropriate chunk in the process's calls and the
+        # index within that chunk.
+        for pid, chunk_ids in sorted(requested_calls_by_pid.items()):
+            for chunk_idx, call_idxs in sorted(chunk_ids.items()):
+                chunk_id = process_data_by_pid[pid][chunk_idx]
+                if enabledconf["mongodb"]:
+                    call_data = mongo_find_one(
+                        "calls",
+                        {"_id": chunk_id},
+                        {"calls": 1, "_id": 0},
+                    )
+                elif es_as_db:
+                    call_data = es.search(
+                        index=get_calls_index(),
+                        body={"query": {"bool": {"must": [{"match": {"_id": chunk_id}}]}}},
+                        _source=["calls"],
+                    )["hits"]["hits"][0]["_source"]
+                else:
+                    return HttpResponse()
+
+                for call_idx in sorted(call_idxs):
+                    calls_to_return.append(call_data["calls"][call_idx])
+    except (KeyError, IndexError):
+        raise BadRequest("Unable to find requested call.")
+
+    return calls_to_return
+
+
+@csrf_exempt
+@require_POST
+@conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
+def signature_calls(request, task_id):
+    try:
+        requested_calls = json.loads(request.body)
+    except json.JSONDecodeError:
+        raise BadRequest("Invalid JSON body.")
+
+    if not requested_calls:
+        return HttpResponse()
+
+    try:
+        if "call" in requested_calls[0]:
+            calls_to_return = [requested_call["call"] for requested_call in requested_calls]
+        else:
+            calls_to_return = fetch_signature_call_data(int(task_id), requested_calls)
+    except (AttributeError, IndexError, TypeError):
+        raise BadRequest
+
+    return render(request, "analysis/behavior/_chunk.html", {"chunk": {"calls": calls_to_return}})
+
+
 @require_safe
 @conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
 def chunk(request, task_id, pid, pagenum):
@@ -684,6 +776,7 @@ def chunk(request, task_id, pid, pagenum):
         for pdict in record["behavior"]["processes"]:
             if pdict["process_id"] == pid:
                 process = pdict
+                break
 
         if not process:
             raise PermissionDenied
@@ -1159,10 +1252,10 @@ def search_behavior(request, task_id):
         results = []
         search_pid = None
         search_tid = None
-        match = re.search("pid=(?P<search_pid>\d+)", query)
+        match = re.search(r"pid=(?P<search_pid>\d+)", query)
         if match:
             search_pid = int(match.group("search_pid"))
-        match = re.search("tid=(?P<search_tid>\d+)", query)
+        match = re.search(r"tid=(?P<search_tid>\d+)", query)
         if match:
             search_tid = match.group("search_tid")
 
@@ -1222,6 +1315,27 @@ def search_behavior(request, task_id):
         raise PermissionDenied
 
 
+def split_signature_calls(report):
+    """For each of the signatures in the given report, examine its "data" and separate out calls in to a "calls" key."""
+    if report is None:
+        return None
+    for sig in report.get("signatures", []):
+        if sig.get("new_data"):
+            continue
+        calls = []
+        non_calls = []
+        for datum in sig.pop("data", []):
+            if datum.get("type") == "call":
+                calls.append(datum)
+            else:
+                non_calls.append(datum)
+        if calls:
+            sig["calls"] = calls
+        sig["data"] = non_calls
+
+    return report
+
+
 @require_safe
 @conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
 @ratelimit(key="ip", rate=my_rate_seconds, block=rateblock)
@@ -1242,6 +1356,7 @@ def report(request, task_id):
             {"network.domains": 1, "network.dns": 1, "network.hosts": 1},
             sort=[("_id", -1)],
         )
+        report = split_signature_calls(report)
 
     if es_as_db:
         query = es.search(index=get_analysis_index(), query=get_query_by_info_id(task_id))["hits"]["hits"][0]
@@ -1269,10 +1384,6 @@ def report(request, task_id):
         if report.get("behavior", {}).get("summary", {}):
             with suppress(Exception):
                 report["behavior"]["summary"] = json.loads(zlib.decompress(report["behavior"]["summary"]))
-    children = 0
-    if "CAPE_children" in report:
-        children = report["CAPE_children"]
-
     report["CAPE"] = 0
     report["dropped"] = 0
     report["procdump"] = 0
@@ -1433,7 +1544,6 @@ def report(request, task_id):
             "tab_name": "static",
             "source_url": report["info"].get("source_url", ""),
             # till here
-            "children": children,
             "domainlookups": domainlookups,
             "iplookups": iplookups,
             "settings": settings,
@@ -1454,22 +1564,25 @@ def report(request, task_id):
 @csrf_exempt
 @api_view(["GET"])
 def file_nl(request, category, task_id, dlfile):
-    file_name = dlfile
     base_path = os.path.join(CUCKOO_ROOT, "storage", "analyses", str(task_id))
     path = False
     if category == "screenshot":
-        file_name += ".jpg"
-        path = os.path.join(base_path, "shots", file_name)
-        cd = "image/jpeg"
+        for ext, cd in ((".jpg", "image/jpeg"), (".png", "image/png")):
+            file_name = dlfile + ext
+            path = os.path.join(base_path, "shots", file_name)
+            if path_exists(path):
+                break
+        else:
+            return render(request, "error.html", {"error": f"Could not find screenshot {dlfile}"})
 
     elif category == "bingraph":
-        path = os.path.join(base_path, "bingraph", file_name + "-ent.svg")
-        file_name += "-ent.svg"
+        file_name = dlfile + "-ent.svg"
+        path = os.path.join(base_path, "bingraph", file_name)
         cd = "image/svg+xml"
 
     elif category == "vba2graph":
-        path = os.path.join(base_path, "vba2graph", f"{file_name}.svg")
-        file_name = f"{file_name}.svg"
+        file_name = f"{dlfile}.svg"
+        path = os.path.join(base_path, "vba2graph", file_name)
         cd = "image/svg+xml"
 
     else:
@@ -1725,7 +1838,6 @@ def procdump(request, task_id, process_id, start, end, zipped=False):
 @require_safe
 @conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
 def filereport(request, task_id, category):
-
     # check if allowed to download to all + if no if user has permissions
     if not settings.ALLOW_DL_REPORTS_TO_ALL and (
         request.user.is_anonymous
@@ -1791,7 +1903,6 @@ def full_memory_dump_file(request, analysis_number):
 @require_safe
 @conditional_login_required(login_required, settings.WEB_AUTHENTICATION)
 def full_memory_dump_strings(request, analysis_number):
-
     filename = None
     for name in ("memory.dmp.strings", "memory.dmp.strings.zip"):
         path = os.path.join(CUCKOO_ROOT, "storage", "analyses", str(analysis_number), name)

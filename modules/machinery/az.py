@@ -443,7 +443,7 @@ class Azure(Machinery):
         else:
             self.delete_machine(label)
 
-    def availables(self, machine_id=None, platform=None, tags=None, arch=None):
+    def availables(self, label=None, platform=None, tags=None, arch=None, include_reserved=False, os_version=[]):
         """
         Overloading abstracts.py:availables() to utilize the auto-scale option.
         """
@@ -457,9 +457,11 @@ class Azure(Machinery):
                     log.debug("Machinery is not ready yet...")
                     return 0
 
-        return super(Azure, self).availables(machine_id=machine_id, platform=platform, tags=tags, arch=arch)
+        return super(Azure, self).availables(
+            label=label, platform=platform, tags=tags, arch=arch, include_reserved=include_reserved, os_version=os_version
+        )
 
-    def acquire(self, machine_id=None, platform=None, tags=None, arch=None):
+    def acquire(self, machine_id=None, platform=None, tags=None, arch=None, os_version=[]):
         """
         Overloading abstracts.py:acquire() to utilize the auto-scale option.
         @param machine_id: the name of the machine to be acquired
@@ -468,7 +470,9 @@ class Azure(Machinery):
         @param arch: the architecture of the operating system
         @return: dict representing machine object from DB
         """
-        base_class_return_value = super(Azure, self).acquire(machine_id=machine_id, platform=platform, tags=tags, arch=arch)
+        base_class_return_value = super(Azure, self).acquire(
+            machine_id=machine_id, platform=platform, tags=tags, arch=arch, os_version=os_version
+        )
         if base_class_return_value and base_class_return_value.name:
             vmss_name, _ = base_class_return_value.name.split("_")
 
@@ -566,6 +570,7 @@ class Azure(Machinery):
                     snapshot=vmss_vm.storage_profile.image_reference.id,
                     resultserver_ip=self.options.az.resultserver_ip,
                     resultserver_port=self.options.az.resultserver_port,
+                    reserved=False,
                 )
                 # When we aren't initializing the system, the machine will immediately become available in DB
                 # When we are initializing, we're going to wait for the machine to be have the Cuckoo agent all set up

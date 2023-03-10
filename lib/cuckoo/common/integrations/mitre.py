@@ -6,7 +6,6 @@ import logging
 import os
 
 from lib.cuckoo.common.constants import CUCKOO_ROOT
-from lib.cuckoo.common.path_utils import path_exists, path_is_file
 
 log = logging.getLogger("mitre")
 
@@ -17,20 +16,20 @@ def mitre_generate_attck(results, mitre):
     for ttp in results["ttps"]:
         ttp_dict.setdefault(ttp["ttp"], set()).add(ttp["signature"])
     try:
-        for technique in sorted(mitre.enterprise.techniques, key=lambda x: x.technique_id):
+        for technique in mitre.enterprise.techniques:
             if technique.technique_id not in list(ttp_dict.keys()):
                 continue
             for tactic in technique.tactics:
                 attck.setdefault(tactic.name, []).append(
                     {
-                        "t_id": technique.id,
+                        "t_id": technique.technique_id,
                         "ttp_name": technique.name,
                         "description": technique.description,
                         "signature": list(ttp_dict[technique.technique_id]),
                     }
                 )
     except FileNotFoundError:
-        print("MITRE Att&ck data missed, execute: 'python3 utils/community.py -waf'")
+        print("MITRE Att&ck data missed, execute: 'python3 utils/community.py -waf --mitre'")
     except Exception as e:
         # simplejson.errors.JSONDecodeError
         log.error(("Mitre", e))
@@ -99,37 +98,6 @@ def mitre_load(enabled: bool = False):
         return mitre, HAVE_MITRE, pyattck_version
 
     try:
-        # Till fix https://github.com/swimlane/pyattck/pull/129
-        from pyattck.configuration import Configuration, Options
-        from pyattck.utils.exceptions import UnknownFileError
-        from pyattck.utils.version import __version_info__ as pyattck_version
-
-        _ = Options._read_from_disk
-        import json
-        import warnings
-
-        import yaml
-
-        def _read_from_disk(self, path):
-            if path_exists(path) and path_is_file(path):
-                try:
-                    with open(path) as f:
-                        if path.endswith(".json"):
-                            return json.load(f)
-                        elif path.endswith(".yml") or path.endswith(".yaml"):
-                            return Configuration(**yaml.load(f, Loader=yaml.SafeLoader))
-                        else:
-                            raise UnknownFileError(provided_value=path, known_values=[".json", ".yml", ".yaml"])
-                except Exception:
-                    warnings.warn(
-                        message=f"The provided config file {path} is not in the correct format. " "Using default values instead."
-                    )
-                    pass
-            elif os.path.isdir(path):
-                raise Exception(f"The provided path is a directory and must be a file: {path}")
-
-        Options._read_from_disk = _read_from_disk
-
         mitre = init_mitre_attck()
         HAVE_MITRE = True
 

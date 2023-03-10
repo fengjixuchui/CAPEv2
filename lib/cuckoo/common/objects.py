@@ -121,6 +121,15 @@ yara_error = {
     "49": "ERROR_REGULAR_EXPRESSION_TOO_COMPLEX",
 }
 
+type_list = [
+    "RAR self-extracting archive",
+    "Nullsoft Installer self-extracting archive",
+    "7-zip Installer data",
+    "Inno Setup",
+    "MSI Installer",
+    "Microsoft Cabinet",  # ToDo add die support here
+]
+
 
 class Dictionary(dict):
     """Cuckoo custom dict."""
@@ -380,8 +389,8 @@ class File:
                         log.warning("Unable to import pefile (install with `pip3 install pefile`)")
             except Exception as e:
                 log.error(e, exc_info=True)
-            if not self.file_type:
-                self.file_type = self.get_content_type()
+        if not self.file_type:
+            self.file_type = self.get_content_type()
 
         return self.file_type
 
@@ -535,6 +544,10 @@ class File:
         # Close PE file and return RichPE hash digest
         return md5.hexdigest()
 
+    def is_sfx(self):
+        filetype = self.get_content_type()
+        return any([ftype in filetype for ftype in type_list])
+
     def get_all_hashe(self):
         return {
             "crc32": self.get_crc32(),
@@ -565,7 +578,7 @@ class File:
             "sha512": self.get_sha512(),
             "rh_hash": self.get_rh_hash(),
             "ssdeep": self.get_ssdeep(),
-            "type": self.get_content_type(),
+            "type": self.get_type(),
             "yara": self.get_yara(),
             "cape_yara": self.get_yara(category="CAPE"),
             "clamav": self.get_clamav(),

@@ -188,13 +188,14 @@ class AnalysisManager(threading.Thread):
 
             # If the user specified a specific machine ID, a platform to be
             # used or machine tags acquire the machine accordingly.
-            task_archs = [tag.name for tag in self.task.tags if tag.name in ("x86", "x64")]
-            task_tags = [tag.name for tag in self.task.tags if tag.name not in task_archs]
+            task_archs, task_tags = self.db._task_arch_tags_helper(self.task)
+            os_version = self.db._package_vm_requires_check(self.task.package)
 
-            # In some cases it's possible that we enter this loop without
-            # having any available machines. We should make sure this is not
+            # In some cases it's possible that we enter this loop without having any available machines. We should make sure this is not
             # such case, or the analysis task will fail completely.
-            if not machinery.availables(machine_id=self.task.machine, platform=self.task.platform, tags=task_tags, arch=task_archs):
+            if not machinery.availables(
+                label=self.task.machine, platform=self.task.platform, tags=task_tags, arch=task_archs, os_version=os_version
+            ):
                 machine_lock.release()
                 log.debug(
                     "Task #%s: no machine available yet for machine '%s', platform '%s' or tags '%s'.",
@@ -206,7 +207,9 @@ class AnalysisManager(threading.Thread):
                 time.sleep(1)
                 continue
 
-            machine = machinery.acquire(machine_id=self.task.machine, platform=self.task.platform, tags=task_tags, arch=task_archs)
+            machine = machinery.acquire(
+                machine_id=self.task.machine, platform=self.task.platform, tags=task_tags, arch=task_archs, os_version=os_version
+            )
 
             # If no machine is available at this moment, wait for one second and try again.
             if not machine:
@@ -303,13 +306,6 @@ class AnalysisManager(threading.Thread):
         dead_machine = False
         self.socks5s = _load_socks5_operational()
 
-        log.info(
-            "Task #%s: Starting analysis of %s '%s'",
-            self.task.id,
-            self.task.category.upper(),
-            convert_to_printable(self.task.target),
-        )
-
         # Initialize the analysis folders.
         if not self.init_storage():
             log.debug("Failed to initialize the analysis folder")
@@ -318,6 +314,13 @@ class AnalysisManager(threading.Thread):
         category_early_escape = self.category_checks()
         if isinstance(category_early_escape, bool):
             return category_early_escape
+
+        log.info(
+            "Task #%s: Starting analysis of %s '%s'",
+            self.task.id,
+            self.task.category.upper(),
+            convert_to_printable(self.task.target),
+        )
 
         # Acquire analysis machine.
         try:
@@ -841,7 +844,7 @@ class Scheduler:
             # If no machines are available, it's pointless to fetch for pending tasks. Loop over.
             # But if we analyze pcaps/static only it's fine
             # ToDo verify that it works with static and file/url
-            if self.categories_need_VM and not machinery.availables():
+            if self.categories_need_VM and not machinery.availables(include_reserved=True):
                 continue
             # Exits if max_analysis_count is defined in the configuration
             # file and has been reached.

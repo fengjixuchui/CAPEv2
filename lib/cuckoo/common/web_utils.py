@@ -24,6 +24,7 @@ from lib.cuckoo.common.utils import (
     generate_fake_name,
     get_ip_address,
     get_options,
+    get_platform,
     get_user_filename,
     sanitize_filename,
     store_temp_file,
@@ -100,8 +101,6 @@ if repconf.elasticsearchdb.enabled:
         es_as_db = True
 
     es = elastic_handler
-
-VALID_LINUX_TYPES = ["Bourne-Again", "POSIX shell script", "ELF", "Python"]
 
 hash_len = {
     32: "md5",
@@ -503,12 +502,6 @@ def get_magic_type(data):
     return False
 
 
-def get_platform(magic):
-    if magic and any(x in magic for x in VALID_LINUX_TYPES):
-        return "linux"
-    return "windows"
-
-
 def download_file(**kwargs):
     """Example of kwargs
     {
@@ -831,7 +824,7 @@ def validate_task(tid, status=TASK_REPORTED):
         return {"error": True, "error_value": "Task does not exist"}
 
     if task.status == TASK_RECOVERED and task.custom:
-        m = re.match("^Recovery_(?P<taskid>\d+)$", task.custom)
+        m = re.match(r"^Recovery_(?P<taskid>\d+)$", task.custom)
         if m:
             task_id = int(m.group("taskid"))
             task = db.view_task(task_id, details=True)
@@ -877,7 +870,6 @@ perform_search_filters = {
     "suri_http_cnt": 1,
     "suri_file_cnt": 1,
     "trid": 1,
-    "CAPE_childrens": 1,
     "_id": 0,
 }
 
@@ -1257,7 +1249,7 @@ def process_new_task_files(request, samples, details, opt_filename, unique):
         size = sample.size
         data = False
         if size > web_cfg.general.max_sample_size:
-            if not (web_cfg.general.allow_ignore_size and "ignore_size_check" in details["options"]):
+            if not (web_cfg.general.allow_ignore_size and "bypass_size_check" in details["options"]):
                 first_chunk = sample.chunks().__next__()
                 if web_cfg.general.enable_trim and HAVE_PEFILE and IsPEImage(first_chunk):
                     trimmed_size = trim_sample(sample.chunks().__next__())

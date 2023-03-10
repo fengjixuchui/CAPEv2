@@ -21,7 +21,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from lib.cuckoo.common.abstracts import Processing
-from lib.cuckoo.common.cape_utils import cape_name_from_yara, pe_map, static_config_parsers
+from lib.cuckoo.common.cape_utils import cape_name_from_yara, is_duplicated_binary, pe_map, static_config_parsers
 from lib.cuckoo.common.config import Config
 from lib.cuckoo.common.integrations.file_extra_info import DuplicatesType, static_file_info
 from lib.cuckoo.common.objects import File
@@ -35,13 +35,6 @@ from lib.cuckoo.common.utils import (
     wide2str,
 )
 
-try:
-    import pydeep
-
-    HAVE_PYDEEP = True
-except ImportError:
-    HAVE_PYDEEP = False
-
 processing_conf = Config("processing")
 externalservices_conf = Config("externalservices")
 
@@ -54,8 +47,6 @@ MISP_HASH_LOOKUP = False
 if externalservices_conf.misp.enabled:
     with suppress(Exception):
         from lib.cuckoo.common.integrations.misp import MISP_HASH_LOOKUP, misp_hash_lookup
-
-ssdeep_threshold = 95
 
 # CAPE output types. To correlate with cape\cape.h in monitor
 COMPRESSION = 2
@@ -225,6 +216,8 @@ class CAPE(Processing):
             if category == "dropped":
                 file_info.update(metadata.get(file_info["path"][0], {}))
                 file_info["guest_paths"] = list({path.get("filepath") for path in metadata.get(file_path, [])})
+                if not file_info["guest_paths"] and category == "dropped" and "CAPE" not in metadata.get("filepath", ""):
+                    file_info["guest_paths"] = [metadata.get("filepath", "")]
                 file_info["name"] = list(
                     {path.get("filepath", "").rsplit("\\", 1)[-1] for path in metadata.get(file_path, [])}
                 ) or [metadata.get("filepath").rsplit("\\", 1)[-1]]
@@ -316,21 +309,7 @@ class CAPE(Processing):
         # Remove duplicate payloads from web ui
         for cape_file in self.cape["payloads"] or []:
             if file_info["size"] == cape_file["size"]:
-                if HAVE_PYDEEP:
-                    ssdeep_grade = pydeep.compare(file_info["ssdeep"].encode(), cape_file["ssdeep"].encode())
-                    if ssdeep_grade >= ssdeep_threshold:
-                        log.debug(
-                            "CAPE duplicate output file skipped: ssdeep grade %d, threshold %d", ssdeep_grade, ssdeep_threshold
-                        )
-                        append_file = False
-                if file_info.get("entrypoint") and file_info.get("ep_bytes") and cape_file.get("entrypoint"):
-                    if (
-                        file_info["entrypoint"] == cape_file["entrypoint"]
-                        and file_info["cape_type_code"] == cape_file["cape_type_code"]
-                        and file_info["ep_bytes"] == cape_file["ep_bytes"]
-                    ):
-                        log.debug("CAPE duplicate output file skipped: matching entrypoint")
-                        append_file = False
+                append_file = is_duplicated_binary(file_info, cape_file, append_file)
 
         if append_file:
             if HAVE_FLARE_CAPA and category == "CAPE":

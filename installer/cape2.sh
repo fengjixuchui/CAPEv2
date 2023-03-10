@@ -14,6 +14,7 @@ NETWORK_IFACE=virbr1
 # for tor
 IFACE_IP="192.168.1.1"
 # DB password
+INTERNET_IFACE=$(ip route | grep '^default'|awk '{print $5}')
 PASSWD="SuperPuperSecret"
 DIST_MASTER_IP=X.X.X.X
 USER="cape"
@@ -49,7 +50,7 @@ librenms_mdadm_enable=0
 librenms_megaraid_enable=0
 
 # disabling this will result in the web interface being disabled
-mongo_enable=1
+MONGO_ENABLE=1
 
 DIE_VERSION="3.07"
 
@@ -202,7 +203,7 @@ function librenms_sneck_config() {
 	else
 		echo "#clamav|/usr/lib/nagios/plugins/check_clamav -w $librenms_clamav_warn -c $librenms_clamav_crit"
 	fi
-	if [ "$mongo_enable" -ge 1 ]; then
+	if [ "$MONGO_ENABLE" -ge 1 ]; then
 		echo "mongodb|/usr/lib/nagios/plugins/check_mongodb.py $librenms_mongo_args"
 		echo 'cape_web_procs|/usr/lib/nagios/plugins/check_procs --ereg-argument-array "poetry.*bin/python manage.py" 1:'
 	else
@@ -602,12 +603,22 @@ function redsocks2() {
 }
 
 function distributed() {
-    sudo apt install uwsgi -y 2>/dev/null
-    sudo mkdir -p /data/{config,}db
-    sudo chown mongodb:mongodb /data/ -R
+    sudo apt install uwsgi uwsgi-plugin-python3 nginx -y 2>/dev/null
+    sudo -u ${USER} bash -c 'poetry run pip install flask flask-restful flask-sqlalchemy requests'
 
-    if [ ! -f /lib/systemd/system/mongos.service ]; then
-        cat >> /lib/systemd/system/mongos.service << EOL
+    sudo cp /opt/CAPEv2/uwsgi/capedist.ini /etc/uwsgi/apps-available/cape_dist.ini
+    sudo ln -s /etc/uwsgi/apps-available/cape_dist.ini /etc/uwsgi/apps-enabled
+
+    sudo -u postgres -H sh -c "psql -c \"CREATE DATABASE ${USER}dist\"";
+    sudo -u postgres -H sh -c "psql -d \"${USER}\" -c \"GRANT ALL PRIVILEGES ON DATABASE ${USER}dist to ${USER};\""
+    sudo -u postgres -H sh -c "psql -d \"${USER}\" -c \"ALTER DATABASE ${USER}dist OWNER TO ${USER};\""
+
+    if [ "$MONGO_ENABLE" -ge 1 ]; then
+        sudo mkdir -p /data/{config,}db
+        sudo chown mongodb:mongodb /data/ -R
+
+        if [ ! -f /lib/systemd/system/mongos.service ]; then
+            cat >> /lib/systemd/system/mongos.service << EOL
 [Unit]
 Description=Mongo shard service
 After=network.target
@@ -623,15 +634,16 @@ ExecStart=/usr/bin/mongos --configdb cape_config/${DIST_MASTER_IP}:27019 --port 
 [Install]
 WantedBy=multi-user.target
 EOL
-fi
-    systemctl daemon-reload
-    systemctl enable mongos.service
-    systemctl start mongos.service
+        fi
+        systemctl daemon-reload
+        systemctl enable mongos.service
+        systemctl start mongos.service
 
-    echo -e "\n\n\n[+] CAPE distributed documentation: https://github.com/kevoreilly/CAPEv2/blob/master/docs/book/src/usage/dist.rst"
-    echo -e "\t https://docs.mongodb.com/manual/tutorial/enable-authentication/"
-    echo -e "\t https://docs.mongodb.com/manual/administration/security-checklist/"
-    echo -e "\t https://docs.mongodb.com/manual/core/security-users/#sharding-security"
+        echo -e "\n\n\n[+] CAPE distributed documentation: https://github.com/kevoreilly/CAPEv2/blob/master/docs/book/src/usage/dist.rst"
+        echo -e "\t https://docs.mongodb.com/manual/tutorial/enable-authentication/"
+        echo -e "\t https://docs.mongodb.com/manual/administration/security-checklist/"
+        echo -e "\t https://docs.mongodb.com/manual/core/security-users/#sharding-security"
+    fi
 }
 
 function install_suricata() {
@@ -709,7 +721,7 @@ function install_yara() {
     mkdir -p /tmp/yara_builded/DEBIAN
     cd "$directory" || return
     ./bootstrap.sh
-    ./configure --enable-cuckoo --enable-magic --enable-dotnet --enable-profiling
+    ./configure --enable-cuckoo --enable-magic --enable-profiling
     make -j"$(getconf _NPROCESSORS_ONLN)"
     yara_version_only=$(echo $yara_version|cut -c 2-)
     echo -e "Package: yara\nVersion: $yara_version_only\nArchitecture: $ARCH\nMaintainer: $MAINTAINER\nDescription: yara-$yara_version" > /tmp/yara_builded/DEBIAN/control
@@ -725,13 +737,14 @@ function install_yara() {
     # Temp workarond to fix issues compiling yara-python https://github.com/VirusTotal/yara-python/issues/212
     # partially applying PR https://github.com/VirusTotal/yara-python/pull/210/files
     sed -i "191 i \ \ \ \ # Needed to build tlsh'\n    module.define_macros.extend([('BUCKETS_128', 1), ('CHECKSUM_1B', 1)])\n    # Needed to build authenticode parser\n    module.libraries.append('ssl')" setup.py
-    python3 setup.py build --enable-cuckoo --enable-magic --enable-dotnet --enable-profiling
+    python3 setup.py build --enable-cuckoo --enable-magic --enable-profiling
     cd ..
+    # for root
     pip3 install ./yara-python
 }
 
 function install_mongo(){
-	if [ "$mongo_enable" -ge 1 ]; then
+	if [ "$MONGO_ENABLE" -ge 1 ]; then
 		echo "[+] Installing MongoDB"
 		# Mongo >=5 requires CPU AVX instruction support https://www.mongodb.com/docs/manual/administration/production-notes/#x86_64
 		if grep -q ' avx ' /proc/cpuinfo; then
@@ -885,13 +898,10 @@ function dependencies() {
 
     install_postgresql
 
-    # sudo su - postgres
-    #psql
     sudo -u postgres -H sh -c "psql -c \"CREATE USER ${USER} WITH PASSWORD '$PASSWD'\"";
     sudo -u postgres -H sh -c "psql -c \"CREATE DATABASE ${USER}\"";
     sudo -u postgres -H sh -c "psql -d \"${USER}\" -c \"GRANT ALL PRIVILEGES ON DATABASE ${USER} to ${USER};\""
     sudo -u postgres -H sh -c "psql -d \"${USER}\" -c \"ALTER DATABASE ${USER} OWNER TO ${USER};\""
-    #exit
 
     apt install apparmor-utils -y
     TCPDUMP_PATH=`which tcpdump`
@@ -1118,34 +1128,37 @@ function install_CAPE() {
     #chown -R root:${USER} /usr/var/malheur/
     #chmod -R =rwX,g=rwX,o=X /usr/var/malheur/
     # Adapting owner permissions to the ${USER} path folder
-    chown ${USER}:${USER} -R "/opt/CAPEv2/"
-
-    cd CAPEv2 || return
+    mkdir -p "/opt/CAPEv2/custom/conf"
+    cd "/opt/CAPEv2/" || return
     pip3 install poetry crudini
     CRYPTOGRAPHY_DONT_BUILD_RUST=1 sudo -u ${USER} bash -c 'export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring; poetry install'
     sudo -u ${USER} bash -c 'export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring; poetry run extra/poetry_libvirt_installer.sh'
     sudo usermod -aG kvm ${USER}
     sudo usermod -aG libvirt ${USER}
 
-    mkdir -p custom/conf
-    cp -r "conf/*.conf" custom/conf
+    cp -r conf/*.conf "custom/conf"
     sed -i "/connection =/cconnection = postgresql://${USER}:${PASSWD}@localhost:5432/${USER}" custom/conf/cuckoo.conf
-    sed -i "/tor/{n;s/enabled = no/enabled = yes/g}" custom/conf/routing.conf
-    #sed -i "/memory_dump = off/cmemory_dump = on" custom/conf/cuckoo.conf
-    #sed -i "/machinery =/cmachinery = kvm" custom/conf/cuckoo.conf
+    # sed -i "/tor/{n;s/enabled = no/enabled = yes/g}" custom/conf/routing.conf
+    # sed -i "/memory_dump = off/cmemory_dump = on" custom/conf/cuckoo.conf
+    # sed -i "/machinery =/cmachinery = kvm" custom/conf/cuckoo.conf
     sed -i "/interface =/cinterface = ${NETWORK_IFACE}" custom/conf/auxiliary.conf
 
+    chown ${USER}:${USER} -R "/opt/CAPEv2/"
+
 	# default is enabled, so we only need to disable it
-	if [ "$mongo_enable" -lt 1 ]; then
+	if [ "$MONGO_ENABLE" -lt 1 ]; then
 		crudini --set custom/conf/reporting.conf mongodb enabled no
 	fi
 
 	if [ "$librenms_enable" -ge 1 ]; then
-		crudini --set custom/confreporting.conf litereport enabled yes
+		crudini --set custom/conf/reporting.conf litereport enabled yes
 		crudini --set custom/conf/reporting.conf runstatistics enabled yes
 	fi
 
     python3 utils/community.py -waf -cr
+
+    # Configure direct internet connection
+    sudo echo "400 ${INTERNET_IFACE}" >> /etc/iproute2/rt_tables
 }
 
 function install_systemd() {
@@ -1157,7 +1170,7 @@ function install_systemd() {
     cp /opt/CAPEv2/systemd/suricata.service /lib/systemd/system/suricata.service
     systemctl daemon-reload
 	cape_web_enable_string=''
-	if [ "$mongo_enable" -ge 1 ]; then
+	if [ "$MONGO_ENABLE" -ge 1 ]; then
 		cape_web_enable_string="cape-web"
 	fi
     systemctl enable cape cape-rooter cape-processor "$cape_web_enable_string" suricata
@@ -1298,11 +1311,10 @@ fi
 case "$COMMAND" in
 'base')
     dependencies
-    install_volatility3
     install_mongo
     install_suricata
-    install_yara
     install_CAPE
+    install_yara
     install_systemd
     install_jemalloc
     if ! crontab -l | grep -q './smtp_sinkhole.sh'; then
@@ -1324,8 +1336,8 @@ case "$COMMAND" in
     install_volatility3
     install_mongo
     install_suricata
-    install_yara
     install_CAPE
+    install_yara
     install_systemd
     install_jemalloc
     install_logrotate

@@ -54,10 +54,13 @@ from lib.cuckoo.core.database import (
 from lib.cuckoo.core.database import Task as MD_Task
 
 dist_conf = Config("distributed")
+main_server_name = dist_conf.distributed.get("main_server_name", "master")
 
 HAVE_GCP = False
 if dist_conf.GCP.enabled:
-    from lib.cuckoo.common.gcp import HAVE_GCP, autodiscovery
+    from lib.cuckoo.common.gcp import GCP, HAVE_GCP
+
+    cloud = GCP()
 
 # we need original db to reserve ID in db,
 # to store later report, from master or worker
@@ -219,7 +222,7 @@ def node_get_report_nfs(task_id, worker_name, main_task_id) -> bool:
 
 def _delete_many(node, ids, nodes, db):
 
-    if nodes[node].name == "master":
+    if nodes[node].name == main_server_name:
         return
     try:
         url = os.path.join(nodes[node].url, "tasks", "delete_many/")
@@ -247,7 +250,7 @@ def node_submit_task(task_id, node_id):
     task = db.query(Task).filter_by(id=task_id).first()
     check = False
     try:
-        if node.name == "master":
+        if node.name == main_server_name:
             return
 
         # Remove the earlier appended comma
@@ -384,7 +387,7 @@ class Retriever(threading.Thread):
 
         if dist_conf.GCP.enabled and HAVE_GCP:
             # autodiscovery is generic name so in case if we have AWS or Azure it should implement the logic inside
-            thread = threading.Thread(target=autodiscovery, name="autodiscovery", args=())
+            thread = threading.Thread(target=cloud.autodiscovery, name="autodiscovery", args=())
             thread.daemon = True
             thread.start()
             self.threads.append(thread)
@@ -435,7 +438,7 @@ class Retriever(threading.Thread):
         for thr in self.threads:
             try:
                 thr.join(timeout=0.0)
-                log.info(f"Thread: {thr.getName()} - Alive: {thr.is_alive()}")
+                log.info(f"Thread: {thr.name} - Alive: {thr.is_alive()}")
             except Exception as e:
                 log.exception(e)
             time.sleep(60)
@@ -534,7 +537,7 @@ class Retriever(threading.Thread):
         last_checks = {}
         # to not exit till cleaner works
         db = session()
-        while not self.stop_dist.isSet():
+        while not self.stop_dist.is_set():
             # .with_entities(Node.id, Node.name, Node.url, Node.apikey, Node.last_check)
             for node in db.query(Node).filter_by(enabled=True).all():
                 self.status_count.setdefault(node.name, 0)
@@ -591,7 +594,7 @@ class Retriever(threading.Thread):
     def fetch_latest_reports_nfs(self):
         db = session()
         # to not exit till cleaner works
-        while not self.stop_dist.isSet():
+        while not self.stop_dist.is_set():
             task, node_id = self.fetcher_queue.get()
 
             self.current_queue.setdefault(node_id, []).append(task["id"])
@@ -676,7 +679,7 @@ class Retriever(threading.Thread):
     def fetch_latest_reports(self):
         db = session()
         # to not exit till cleaner works
-        while not self.stop_dist.isSet():
+        while not self.stop_dist.is_set():
             task, node_id = self.fetcher_queue.get()
 
             self.current_queue.setdefault(node_id, []).append(task["id"])
@@ -829,7 +832,7 @@ class StatusThread(threading.Thread):
                 db.commit()
                 main_db.set_status(task.main_task_id, TASK_PENDING)
 
-        if node.name != "master":
+        if node.name != main_server_name:
             # don"t do nothing if nothing in pending
             # Get tasks from main_db submitted through web interface
             main_db_tasks = main_db.list_tasks(
@@ -876,7 +879,7 @@ class StatusThread(threading.Thread):
                     if tasks:
                         for task in tasks:
                             # log.info("Deleting incorrectly uploaded file from dist db, main_task_id: {}".format(t.id))
-                            if node.name == "master":
+                            if node.name == main_server_name:
                                 main_db.set_status(t.id, TASK_RUNNING)
                             else:
                                 main_db.set_status(t.id, TASK_DISTRIBUTED)
@@ -938,7 +941,7 @@ class StatusThread(threading.Thread):
                         # Submit appropriate tasks to node
                         submitted = node_submit_task(task.id, node.id)
                         if submitted:
-                            if node.name == "master":
+                            if node.name == main_server_name:
                                 main_db.set_status(t.id, TASK_RUNNING)
                             else:
                                 main_db.set_status(t.id, TASK_DISTRIBUTED)
@@ -975,13 +978,13 @@ class StatusThread(threading.Thread):
                 if not to_upload:
                     db.commit()
                     log.info("nothing to upload? How? o_O")
-                    return True
+                    return False
                 # Submit appropriate tasks to node
                 log.debug("going to upload {} tasks to node {}".format(pend_tasks_num, node.name))
                 for task in to_upload:
                     submitted = node_submit_task(task.id, node.id)
                     if submitted:
-                        if node.name == "master":
+                        if node.name == main_server_name:
                             main_db.set_status(task.main_task_id, TASK_RUNNING)
                         else:
                             main_db.set_status(task.main_task_id, TASK_DISTRIBUTED)
@@ -1019,7 +1022,9 @@ class StatusThread(threading.Thread):
         db = session()
         master_storage_only = False
         if not dist_conf.distributed.master_storage_only:
-            master = db.query(Node).with_entities(Node.id, Node.name, Node.url, Node.apikey).filter_by(name="master").first()
+            master = (
+                db.query(Node).with_entities(Node.id, Node.name, Node.url, Node.apikey).filter_by(name=main_server_name).first()
+            )
             if master is None:
                 master_storage_only = True
             elif db.query(Machine).filter_by(node_id=master.id).count() == 0:
@@ -1087,10 +1092,10 @@ class StatusThread(threading.Thread):
                             force_push_push=True,
                             db=db,
                         )
+                        # We return False if nothing uploaded to cicle the nodes in case we have tags related tasks
                         if not res:
                             continue
                         # Balance the tasks, works fine if no tags are set
-
                         node_name = min(
                             STATUSES,
                             key=lambda k: STATUSES[k]["tasks"]["completed"]
@@ -1104,7 +1109,6 @@ class StatusThread(threading.Thread):
                                 .filter_by(name=node_name)
                                 .first()
                             )
-
                         pend_tasks_num = MINIMUMQUEUE[node.name] - (
                             STATUSES[node.name]["tasks"]["pending"] + STATUSES[node.name]["tasks"]["running"]
                         )
@@ -1123,7 +1127,8 @@ class StatusThread(threading.Thread):
                             continue
 
                     elif (
-                        statuses.get("master", {}).get("tasks", {}).get("pending", 0) > MINIMUMQUEUE.get("master", 0)
+                        statuses.get(main_server_name, {}).get("tasks", {}).get("pending", 0)
+                        > MINIMUMQUEUE.get(main_server_name, 0)
                         and status["tasks"]["pending"] < MINIMUMQUEUE[node.name]
                     ):
                         res = self.submit_tasks(node.name, pend_tasks_num, db=db)
